@@ -72,11 +72,12 @@ ORB_TOP_N_STOCKS = int(os.getenv("ORB_TOP_N_STOCKS", "25"))
 ORB_MINUTES             = int(os.getenv("ORB_MINUTES",            "15"))
 # First 15 minutes of NSE session define the opening range.
 
-ORB_VOLUME_MULTIPLIER   = float(os.getenv("ORB_VOLUME_MULTIPLIER", "2.0"))
+ORB_VOLUME_MULTIPLIER   = float(os.getenv("ORB_VOLUME_MULTIPLIER", "1.5"))
 # Breakout candle volume >= this × 10-candle avg.
-# v3 backtest at 1.15× showed 53% STOP_LOSS rate — most were low-volume fakeouts.
-# Raised to 2.0×: only explosive-volume breakouts qualify. Institutional conviction
-# signals (2× avg) have dramatically higher follow-through. Cuts bad entries sharply.
+# 1.15× (v2) was too loose — accepted near-average volume, lots of fakeouts.
+# 2.0× (tried in v3) was too aggressive — cut trade count without improving win rate;
+# high-volume stocks that break out can also reverse with high volume.
+# 1.5× is the balance: above-average conviction without over-filtering.
 
 ORB_MIN_RANGE_PCT       = float(os.getenv("ORB_MIN_RANGE_PCT",     "0.005"))
 # Min ORB size as % of price (0.5%). Raised from 0.3%:
@@ -91,13 +92,11 @@ ORB_CHASE_LIMIT_PCT     = float(os.getenv("ORB_CHASE_LIMIT_PCT",   "0.010"))
 # Max extension beyond ORB level before entry blocked.
 # Relaxed from 0.8% → 1.0% — captures breakouts that extend slightly further.
 
-ORB_TARGET_MULTIPLIER   = float(os.getenv("ORB_TARGET_MULTIPLIER", "2.0"))
-# Target = entry ± (ORB range × 2.0).
-# v3 backtest at 1.5× showed only 7% of trades reached target — avg win too small.
-# Raised to 2.0× alongside tighter entry filters (volume 2.0×, gap 0.5%):
-# high-conviction breakouts have stronger momentum → 2.0× is achievable.
-# TIME_EXIT at T+60 still provides partial profit capture on trades that stall.
-# Expected: fewer but larger wins; net/trade target Rs400–500.
+ORB_TARGET_MULTIPLIER   = float(os.getenv("ORB_TARGET_MULTIPLIER", "1.5"))
+# Target = entry ± (ORB range × 1.5).
+# 2.0× (tried in v3) produced only 4 TARGET hits in 30 days — too far.
+# At 1.5× the original v3 backtest produced 15 TARGET hits (7% of trades).
+# TIME_EXIT at T+60 and ST_EXIT protect profit on trades that stall before target.
 
 ORB_ENTRY_CUTOFF_TIME   = os.getenv("ORB_ENTRY_CUTOFF_TIME",       "11:00")
 # Primary ORB entries cut off at 11:00 IST (90-min window after ORB establishes).
@@ -174,6 +173,21 @@ ORB_SUPERTREND_MIN_GAIN_R  = float(os.getenv("ORB_SUPERTREND_MIN_GAIN_R",      "
 # Below 0.3R the 2-min ST is too noisy for reliable profit protection;
 # time-decay stops handle flat/losing trades. At 0.3R+ we have real profit
 # to protect and the ST flip signals genuine momentum reversal.
+
+ORB_SUPERTREND_ENTRY_FILTER = os.getenv("ORB_SUPERTREND_ENTRY_FILTER", "true").lower() == "true"
+# Require 2-min SuperTrend to be ALIGNED with the trade direction at entry.
+# BUY  signal: only enter if ST is currently BULLISH (price above ST support).
+# SELL signal: only enter if ST is currently BEARISH (price below ST resistance).
+#
+# Why this works better than ST as an exit:
+#   A stock breaking above ORB high while its 2-min ST is BEARISH is fighting
+#   its own trend — high fakeout probability. These became the 61% STOP_LOSS exits.
+#   A stock breaking above ORB high while ST is BULLISH has two aligned signals:
+#   range breakout + intraday trend confirmation → much higher follow-through.
+#
+# Effect: reduces trade count slightly but eliminates the weakest setups.
+# Particularly effective for filtering BULL-day LONG trades that enter against
+# an intraday downtrend despite the macro regime being bullish.
 
 # ---------------------------------------------------------------------------
 # Timing

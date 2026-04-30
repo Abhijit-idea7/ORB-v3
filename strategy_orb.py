@@ -14,9 +14,12 @@ ENTRY RULES (15-min primary window only — same as v2)
   3. Gap direction aligned: gap-up → LONG only; gap-down → SHORT only
   4. Close > ORB high (BUY) or Close < ORB low (SELL)
   5. Extension ≤ chase limit (< 1.0% beyond ORB level)
-  6. Volume on breakout candle ≥ 1.15 × 10-candle average
+  6. Volume on breakout candle ≥ 1.5 × 10-candle average
   7. Close > VWAP (BUY) or Close < VWAP (SELL) — fair-value confirmation
-  8. ORB range: 0.3%–4% of price (meaningful but not extreme)
+  8. ORB range: 0.5%–4% of price (meaningful but not extreme)
+  9. SuperTrend (7,3.0) on 2-min chart must be BULLISH for BUY, BEARISH for SELL
+     (ORB_SUPERTREND_ENTRY_FILTER=True). Eliminates breakouts that fight the
+     intraday trend — the main source of STOP_LOSS fakeout exits.
 
 STOP LOSS   BUY: ORB Low  |  SELL: ORB High
 TARGET      BUY/SELL: entry ± (ORB range × 1.5)
@@ -60,6 +63,7 @@ from config import (
     ORB_MIN_RANGE_PCT,
     ORB_POSITION_SCALE,
     ORB_SECONDARY_WINDOW_ENABLED,
+    ORB_SUPERTREND_ENTRY_FILTER,
     ORB_SUPERTREND_MIN_GAIN_R,
     ORB_TARGET_MULTIPLIER,
     ORB_V3_CHECKPOINT_1_MINS,
@@ -180,6 +184,29 @@ def _check_orb_window(
         f"orb=[{orb_low:.2f}–{orb_high:.2f}] range={range_pct:.2%} "
         f"gap={gap_pct:+.2%} vol={vol_ratio:.2f}x vwap={vwap:.2f}"
     )
+
+    # ---- SuperTrend entry filter (v3) ----
+    # Require the 2-min ST to be aligned with the trade direction.
+    # BUY  requires ST = bullish  (price above the trailing support line).
+    # SELL requires ST = bearish  (price below the trailing resistance line).
+    # This catches the most common fakeout pattern: price breaks ORB level
+    # but the stock's intraday trend hasn't confirmed the move.
+    if ORB_SUPERTREND_ENTRY_FILTER:
+        st_bull_val = row.get(ST_BULL_COL)
+        if st_bull_val is not None and not pd.isna(st_bull_val):
+            st_is_bullish = bool(st_bull_val)
+            if close > orb_high and not st_is_bullish:
+                logger.info(
+                    f"{symbol} ORB-{window_label}: BUY rejected — "
+                    f"ST bearish at breakout (intraday trend not confirmed)"
+                )
+                return _HOLD
+            if close < orb_low and st_is_bullish:
+                logger.info(
+                    f"{symbol} ORB-{window_label}: SELL rejected — "
+                    f"ST bullish at breakdown (intraday trend not confirmed)"
+                )
+                return _HOLD
 
     # ---- LONG: breakout above ORB high ----
     if close > orb_high:
