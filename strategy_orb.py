@@ -33,6 +33,11 @@ EXIT SIGNALS (v3 — evaluated in priority order)
                   • T+40: gain < 0.3R → SL forced to breakeven
                 Note: effective_sl is stored in position["_v3_effective_sl"]
                 so backtest.py can use the correct exit price.
+  ST_EXIT     — SuperTrend (7,3.0) on 2-min chart flips against position
+                AND gain ≥ 0.3R. Pure profit-protection: catches momentum
+                reversals before the ratchet SL or target are reached.
+                Below 0.3R gain, the 2-min ST is too noisy — time-decay
+                handles flat/losing trades instead.
   TIME_EXIT   — T+60: trade hasn't reached 0.5R gain → exit at market (close)
   ORB_FAILED  — close pulled back > 0.5% inside ORB range
   SQUARE_OFF  — forced close at 15:10 IST (handled by main loop)
@@ -55,6 +60,7 @@ from config import (
     ORB_MIN_RANGE_PCT,
     ORB_POSITION_SCALE,
     ORB_SECONDARY_WINDOW_ENABLED,
+    ORB_SUPERTREND_MIN_GAIN_R,
     ORB_TARGET_MULTIPLIER,
     ORB_V3_CHECKPOINT_1_MINS,
     ORB_V3_CHECKPOINT_2_MINS,
@@ -78,6 +84,8 @@ from indicators import (
     ORB_LOW_30_COL,
     ORB_LOW_COL,
     PREV_DAY_CLOSE_COL,
+    ST_BULL_COL,
+    ST_LINE_COL,
     VOLAVG_COL,
     VWAP_COL,
 )
@@ -343,8 +351,10 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     Priority:
       1. TARGET      — intrabar: candle High (BUY) / Low (SELL) touched target
       2. STOP_LOSS   — intrabar: candle Low (BUY) / High (SELL) hit effective SL
-      3. TIME_EXIT   — T+60 and gain < 0.5R → exit at market (candle close)
-      4. ORB_FAILED  — close-based: price closed back inside ORB range by > 0.5%
+      3. ST_EXIT     — SuperTrend flipped against position AND gain ≥ 0.3R
+                       Exit at candle close. Profit-protection only.
+      4. TIME_EXIT   — T+60 and gain < 0.5R → exit at market (candle close)
+      5. ORB_FAILED  — close-based: price closed back inside ORB range by > 0.5%
     """
     if len(df) < 2:
         return None
@@ -412,8 +422,29 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
         # Store effective SL so backtest can compute accurate exit price
         position["_v3_effective_sl"] = eff_sl
 
-        # --- Exit checks ---
-        # TIME_EXIT first — overrides SL/ORB_FAILED (clean market exit, not stopped)
+        # --- Exit checks (priority order) ---
+        # 1. TARGET — intrabar high touched target
+        if candle_h >= target:
+            return "TARGET"
+
+        # 2. STOP_LOSS — intrabar low hit effective SL (time-decay / ratchet)
+        if candle_l <= eff_sl:
+            return "STOP_LOSS"
+
+        # 3. ST_EXIT — SuperTrend flipped bearish AND trade is in meaningful profit
+        #    Only fires above ORB_SUPERTREND_MIN_GAIN_R to avoid 2-min noise
+        #    exiting flat/early trades. TIME_EXIT handles those instead.
+        if gain_R >= ORB_SUPERTREND_MIN_GAIN_R:
+            st_bull = row.get(ST_BULL_COL)
+            if st_bull is not None and not pd.isna(st_bull) and not bool(st_bull):
+                st_lvl = row.get(ST_LINE_COL, float("nan"))
+                logger.info(
+                    f"BUY ST_EXIT: gain={gain_R:.2f}R ≥ {ORB_SUPERTREND_MIN_GAIN_R}R, "
+                    f"ST turned bearish (line={st_lvl:.2f}) → exit at close {close:.2f}"
+                )
+                return "ST_EXIT"
+
+        # 4. TIME_EXIT — T+60 and trade hasn't earned 0.5R (cut slow/stalling trades)
         if mins >= ORB_V3_TIME_EXIT_MINS and gain_R < ORB_V3_TIME_EXIT_MIN_GAIN_R:
             logger.info(
                 f"BUY T+{mins:.0f}m TIME_EXIT: gain={gain_R:.2f}R < "
@@ -421,10 +452,7 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
             )
             return "TIME_EXIT"
 
-        if candle_h >= target:
-            return "TARGET"
-        if candle_l <= eff_sl:
-            return "STOP_LOSS"
+        # 5. ORB_FAILED — close pulled back inside the ORB range
         if breakout_level and close < breakout_level * (1 - ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
 
@@ -468,7 +496,29 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
         # Store effective SL for backtest
         position["_v3_effective_sl"] = eff_sl
 
-        # --- Exit checks ---
+        # --- Exit checks (priority order) ---
+        # 1. TARGET — intrabar low touched target
+        if candle_l <= target:
+            return "TARGET"
+
+        # 2. STOP_LOSS — intrabar high hit effective SL (time-decay / ratchet)
+        if candle_h >= eff_sl:
+            return "STOP_LOSS"
+
+        # 3. ST_EXIT — SuperTrend flipped bullish AND trade is in meaningful profit
+        #    Only fires above ORB_SUPERTREND_MIN_GAIN_R to avoid 2-min noise
+        #    exiting flat/early trades. TIME_EXIT handles those instead.
+        if gain_R >= ORB_SUPERTREND_MIN_GAIN_R:
+            st_bull = row.get(ST_BULL_COL)
+            if st_bull is not None and not pd.isna(st_bull) and bool(st_bull):
+                st_lvl = row.get(ST_LINE_COL, float("nan"))
+                logger.info(
+                    f"SELL ST_EXIT: gain={gain_R:.2f}R ≥ {ORB_SUPERTREND_MIN_GAIN_R}R, "
+                    f"ST turned bullish (line={st_lvl:.2f}) → exit at close {close:.2f}"
+                )
+                return "ST_EXIT"
+
+        # 4. TIME_EXIT — T+60 and trade hasn't earned 0.5R (cut slow/stalling trades)
         if mins >= ORB_V3_TIME_EXIT_MINS and gain_R < ORB_V3_TIME_EXIT_MIN_GAIN_R:
             logger.info(
                 f"SELL T+{mins:.0f}m TIME_EXIT: gain={gain_R:.2f}R < "
@@ -476,10 +526,7 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
             )
             return "TIME_EXIT"
 
-        if candle_l <= target:
-            return "TARGET"
-        if candle_h >= eff_sl:
-            return "STOP_LOSS"
+        # 5. ORB_FAILED — close pulled back inside the ORB range
         if breakout_level and close > breakout_level * (1 + ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
 

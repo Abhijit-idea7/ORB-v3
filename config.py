@@ -160,6 +160,21 @@ EMA_MACRO       = 50
 RSI_PERIOD      = 14
 VOLUME_LOOKBACK = 10
 
+# SuperTrend (used as profit-protection exit in v3)
+ORB_SUPERTREND_PERIOD      = int(float(os.getenv("ORB_SUPERTREND_PERIOD",      "7")))
+# Standard SuperTrend period. 7 is widely used; lower = more responsive,
+# higher = smoother but slower to react to reversals.
+
+ORB_SUPERTREND_MULTIPLIER  = float(os.getenv("ORB_SUPERTREND_MULTIPLIER",      "3.0"))
+# ATR multiplier for band width. 3.0 on 2-min charts gives clean signals
+# without excessive whipsaw. 2.0 is tighter (more exits, more noise).
+
+ORB_SUPERTREND_MIN_GAIN_R  = float(os.getenv("ORB_SUPERTREND_MIN_GAIN_R",      "0.3"))
+# ST_EXIT only fires when the position has at least this much gain (in R-units).
+# Below 0.3R the 2-min ST is too noisy for reliable profit protection;
+# time-decay stops handle flat/losing trades. At 0.3R+ we have real profit
+# to protect and the ST flip signals genuine momentum reversal.
+
 # ---------------------------------------------------------------------------
 # Timing
 # ---------------------------------------------------------------------------

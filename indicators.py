@@ -3,20 +3,19 @@ indicators.py
 -------------
 All indicator implementations for the ORB trading bot.
 
-New vs v1: computes BOTH 15-min and 30-min ORB windows so the strategy
-can check both in one pass without re-fetching data.
-
 Indicators computed:
-  EMA Fast   — 9-period EMA
-  EMA Slow   — 20-period EMA
-  EMA Macro  — 50-period EMA (session macro trend)
-  VWAP       — Volume-Weighted Average Price (anchored per day)
-  RSI        — 14-period RSI (Wilder's smoothing)
-  Volume Avg — Rolling mean over VOLUME_LOOKBACK candles
-  ORB 15-min — Opening range (9:15–9:30 IST) high/low/established
-  ORB 30-min — Opening range (9:15–9:45 IST) high/low/established
-  Prev Close — Previous trading day's last close (for gap calculation)
-  Day Open   — First candle Open of the trading day (for gap calculation)
+  EMA Fast     — 9-period EMA
+  EMA Slow     — 20-period EMA
+  EMA Macro    — 50-period EMA (session macro trend)
+  VWAP         — Volume-Weighted Average Price (anchored per day)
+  RSI          — 14-period RSI (Wilder's smoothing)
+  Volume Avg   — Rolling mean over VOLUME_LOOKBACK candles
+  SuperTrend   — ATR-based trailing stop; flips direction on trend reversal.
+                 Used in v3 as a profit-protection exit (ST_EXIT).
+  ORB 15-min   — Opening range (9:15–9:30 IST) high/low/established
+  ORB 30-min   — Opening range (9:15–9:45 IST) high/low/established
+  Prev Close   — Previous trading day's last close (for gap calculation)
+  Day Open     — First candle Open of the trading day (for gap calculation)
 """
 
 import numpy as np
@@ -29,6 +28,8 @@ from config import (
     EMA_SLOW,
     ORB_MINUTES,
     ORB_MINUTES_SECONDARY,
+    ORB_SUPERTREND_MULTIPLIER,
+    ORB_SUPERTREND_PERIOD,
     RSI_PERIOD,
     VOLUME_LOOKBACK,
 )
@@ -57,6 +58,10 @@ ORB_EST_30_COL      = "orb_established_30"
 
 PREV_DAY_CLOSE_COL  = "prev_day_close"
 DAY_OPEN_COL        = "day_open"
+
+# SuperTrend (v3 — profit-protection exit signal)
+ST_BULL_COL         = "st_bull"     # True = bullish (price above ST support)
+ST_LINE_COL         = "st_line"     # the trailing line value (support/resistance)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +172,82 @@ def _prev_day_close_and_day_open(df: pd.DataFrame) -> tuple[pd.Series, pd.Series
 
 
 # ---------------------------------------------------------------------------
+# SuperTrend — ATR-based trailing stop / trend direction
+# ---------------------------------------------------------------------------
+def _supertrend(
+    df:         pd.DataFrame,
+    period:     int   = ORB_SUPERTREND_PERIOD,
+    multiplier: float = ORB_SUPERTREND_MULTIPLIER,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Standard SuperTrend indicator (continuous, not day-anchored).
+
+    Algorithm:
+      1. ATR via Wilder's smoothing (EWM, alpha = 1/period)
+      2. Basic bands = midpoint ± multiplier × ATR
+      3. Final bands track in one direction, reset only when price crosses them
+      4. Direction: bullish when close ≥ final lower band; bearish otherwise
+
+    Returns:
+      st_bull  : pd.Series[bool]  — True = bullish (price above trailing support)
+      st_line  : pd.Series[float] — the SuperTrend line value
+                   (final_lower when bullish, final_upper when bearish)
+
+    For v3 exit logic:
+      BUY  position: exit when st_bull flips False (trend turns bearish)
+      SELL position: exit when st_bull flips True  (trend turns bullish)
+      Only fires when position gain ≥ ORB_SUPERTREND_MIN_GAIN_R (profit protection only).
+    """
+    close = df["Close"]
+    hl2   = (df["High"] + df["Low"]) / 2
+
+    # True Range → ATR (Wilder's smoothing = EWM with alpha=1/period)
+    tr = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - close.shift(1)).abs(),
+        (df["Low"]  - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+    basic_upper = (hl2 + multiplier * atr).to_numpy(dtype=float)
+    basic_lower = (hl2 - multiplier * atr).to_numpy(dtype=float)
+    close_arr   = close.to_numpy(dtype=float)
+    n           = len(df)
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    bull        = np.ones(n, dtype=bool)   # True = bullish; first candle assumed bullish
+
+    for i in range(1, n):
+        # Final upper: only moves DOWN (tightens), resets if price crossed above it
+        if close_arr[i - 1] > final_upper[i - 1]:
+            final_upper[i] = basic_upper[i]          # reset after breakout above
+        else:
+            final_upper[i] = min(basic_upper[i], final_upper[i - 1])
+
+        # Final lower: only moves UP (tightens), resets if price crossed below it
+        if close_arr[i - 1] < final_lower[i - 1]:
+            final_lower[i] = basic_lower[i]          # reset after breakdown below
+        else:
+            final_lower[i] = max(basic_lower[i], final_lower[i - 1])
+
+        # Direction: stay bullish unless close falls below lower band;
+        #            stay bearish unless close rises above upper band
+        if bull[i - 1]:
+            bull[i] = close_arr[i] >= final_lower[i]
+        else:
+            bull[i] = close_arr[i] > final_upper[i]
+
+    # ST line = support when bullish, resistance when bearish
+    st_line = np.where(bull, final_lower, final_upper)
+
+    return (
+        pd.Series(bull,    index=df.index, dtype=bool),
+        pd.Series(st_line, index=df.index, dtype=float),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -184,6 +265,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df[VWAP_COL]      = _vwap_daily(df)
     df[RSI_COL]       = _rsi(df["Close"])
     df[VOLAVG_COL]    = df["Volume"].rolling(window=VOLUME_LOOKBACK).mean()
+
+    # SuperTrend — profit-protection exit for v3
+    st_bull, st_line  = _supertrend(df)
+    df[ST_BULL_COL]   = st_bull
+    df[ST_LINE_COL]   = st_line
 
     # Primary ORB (15-min)
     orb_h, orb_l, orb_est = _opening_range(df, ORB_MINUTES)
