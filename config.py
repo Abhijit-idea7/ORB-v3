@@ -72,12 +72,17 @@ ORB_TOP_N_STOCKS = int(os.getenv("ORB_TOP_N_STOCKS", "25"))
 ORB_MINUTES             = int(os.getenv("ORB_MINUTES",            "15"))
 # First 15 minutes of NSE session define the opening range.
 
-ORB_VOLUME_MULTIPLIER   = float(os.getenv("ORB_VOLUME_MULTIPLIER", "1.15"))
+ORB_VOLUME_MULTIPLIER   = float(os.getenv("ORB_VOLUME_MULTIPLIER", "2.0"))
 # Breakout candle volume >= this × 10-candle avg.
-# Relaxed from 1.3 → 1.15 to capture more valid breakouts.
+# v3 backtest at 1.15× showed 53% STOP_LOSS rate — most were low-volume fakeouts.
+# Raised to 2.0×: only explosive-volume breakouts qualify. Institutional conviction
+# signals (2× avg) have dramatically higher follow-through. Cuts bad entries sharply.
 
-ORB_MIN_RANGE_PCT       = float(os.getenv("ORB_MIN_RANGE_PCT",     "0.003"))
-# Min ORB size as % of price (0.3%). Filters dead-flat opens.
+ORB_MIN_RANGE_PCT       = float(os.getenv("ORB_MIN_RANGE_PCT",     "0.005"))
+# Min ORB size as % of price (0.5%). Raised from 0.3%:
+# 0.3% on Rs500 stock = Rs1.50 range → Rs900 target P&L at 2× mult.
+# 0.5% on Rs500 stock = Rs2.50 range → Rs1,500 target P&L at 2× mult.
+# Minimum range filter directly lifts gross P&L per winning trade.
 
 ORB_MAX_RANGE_PCT       = float(os.getenv("ORB_MAX_RANGE_PCT",     "0.04"))
 # Max ORB size as % of price (4%). Avoids extreme gap events.
@@ -86,18 +91,23 @@ ORB_CHASE_LIMIT_PCT     = float(os.getenv("ORB_CHASE_LIMIT_PCT",   "0.010"))
 # Max extension beyond ORB level before entry blocked.
 # Relaxed from 0.8% → 1.0% — captures breakouts that extend slightly further.
 
-ORB_TARGET_MULTIPLIER   = float(os.getenv("ORB_TARGET_MULTIPLIER", "1.5"))
-# Target = entry ± (ORB range × 1.5).
-# Reduced from 2.5 → 1.5: backtest showed only 5.6% of trades reached 2.5× target,
-# while 54% were force-closed at square-off time (price moved right direction but
-# didn't travel far enough). At 1.5× far more trades complete as TARGET hits.
-# Still profitable at 48% win rate with 1.5:1 R:R.
+ORB_TARGET_MULTIPLIER   = float(os.getenv("ORB_TARGET_MULTIPLIER", "2.0"))
+# Target = entry ± (ORB range × 2.0).
+# v3 backtest at 1.5× showed only 7% of trades reached target — avg win too small.
+# Raised to 2.0× alongside tighter entry filters (volume 2.0×, gap 0.5%):
+# high-conviction breakouts have stronger momentum → 2.0× is achievable.
+# TIME_EXIT at T+60 still provides partial profit capture on trades that stall.
+# Expected: fewer but larger wins; net/trade target Rs400–500.
 
 ORB_ENTRY_CUTOFF_TIME   = os.getenv("ORB_ENTRY_CUTOFF_TIME",       "11:00")
 # Primary ORB entries cut off at 11:00 IST (90-min window after ORB establishes).
 
-ORB_MIN_GAP_PCT         = float(os.getenv("ORB_MIN_GAP_PCT",       "0.002"))
-# Gap-direction filter threshold (0.2%). Core edge — do not relax.
+ORB_MIN_GAP_PCT         = float(os.getenv("ORB_MIN_GAP_PCT",       "0.005"))
+# Gap-direction filter threshold (0.5%). Raised from 0.2%:
+# 0.2% gaps are daily noise — almost any stock qualifies. 0.5% gaps reflect real
+# overnight positioning by institutions (news, earnings, sector moves). ORB
+# breakouts in the direction of a 0.5%+ gap have much higher follow-through.
+# Core edge of the strategy — gap direction + gap magnitude both matter.
 
 ORB_POSITION_SCALE      = float(os.getenv("ORB_POSITION_SCALE",    "1.0"))
 # Capital scale per trade. 1.0 = Rs150,000 per trade.
@@ -168,10 +178,11 @@ LOOP_SLEEP_SECONDS  = 120       # Sleep between strategy iterations (2-min candl
 # ---------------------------------------------------------------------------
 REGIME_BULL_THRESHOLD        = 0.20
 REGIME_BEAR_THRESHOLD        = -0.20
-REGIME_BULL_MAX_POSITIONS    = 5    # Capped: backtest BULL days earned Rs613/day vs
-                                    # BEAR days Rs3,366/day — BULL doesn't deserve full exposure
-REGIME_BEAR_MAX_POSITIONS    = 5    # Same cap as BULL — short setups are cleaner
-REGIME_NEUTRAL_MAX_POSITIONS = 5    # Conservative across all regimes
+REGIME_BULL_MAX_POSITIONS    = 3    # v3 quality-over-quantity: only top 3 ATR%-ranked
+                                    # setups. Trades 4-5 are lower conviction and dilute
+                                    # expectancy. Fewer positions, better average quality.
+REGIME_BEAR_MAX_POSITIONS    = 3    # Same — top 3 setups only per regime.
+REGIME_NEUTRAL_MAX_POSITIONS = 3    # Consistent cap across all regimes.
 
 # ---------------------------------------------------------------------------
 # Stocksdeveloper / Zerodha Webhook
