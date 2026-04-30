@@ -1,0 +1,87 @@
+name: ORB v3 — Backtest
+
+# -----------------------------------------------------------------------
+# Run the ORB v3 backtest (time-decay stops) on demand.
+#
+# HOW TO RUN:
+#   GitHub → Actions → "ORB v3 — Backtest" → "Run workflow"
+#   Fill in the inputs and click the green button.
+#
+# INPUTS:
+#   days   : How many trading days to backtest (1–59, default 30)
+#             Yahoo Finance gives max ~59 days of 2-min candle history.
+#   regime : Enable NIFTY50 regime filter (LONG_ONLY on BULL days,
+#             SHORT_ONLY on BEAR days). Recommended: true.
+#
+# OUTPUT:
+#   • Printed per-day table in the Actions log (Gross / Net / Win%)
+#   • Exit reason breakdown: TARGET / STOP_LOSS / TIME_EXIT / ORB_FAILED
+#   • backtest_results.csv saved as a downloadable Actions artifact
+# -----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Trading days to backtest (1–59)"
+        required: false
+        default: "30"
+      regime:
+        description: "Enable NIFTY regime filter? (true / false)"
+        required: false
+        default: "true"
+      position_size:
+        description: "Capital per trade in INR (e.g. 150000)"
+        required: false
+        default: "150000"
+
+jobs:
+  backtest:
+    name: ORB v3 Backtest — ${{ github.event.inputs.days }} days
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        env:
+          STOCKSDEVELOPER_API_KEY: "backtest_mode"
+          STOCKSDEVELOPER_ACCOUNT: "backtest_mode"
+          POSITION_SIZE_INR: ${{ github.event.inputs.position_size }}
+        run: |
+          DAYS="${{ github.event.inputs.days }}"
+          REGIME="${{ github.event.inputs.regime }}"
+          SIZE="${{ github.event.inputs.position_size }}"
+          echo "============================================"
+          echo "  ORB v3 Backtest"
+          echo "  Days          : $DAYS"
+          echo "  Regime        : $REGIME"
+          echo "  Position size : Rs${SIZE}/trade"
+          echo "  Universe      : 55 stocks, top 25/day by ATR%"
+          echo "  Window        : 15-min ORB"
+          echo "  Exits         : TARGET | SL (ratchet) | TIME_EXIT | ORB_FAILED"
+          echo "============================================"
+          if [ "$REGIME" = "true" ]; then
+            python backtest.py --days "$DAYS" --regime
+          else
+            python backtest.py --days "$DAYS"
+          fi
+
+      - name: Upload backtest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results-v3-${{ github.event.inputs.days }}d
+          path: backtest_results.csv
+          retention-days: 30
