@@ -1,0 +1,80 @@
+name: ORB v3 — Time-Decay Trading Bot
+
+# -----------------------------------------------------------------------
+# MANUAL TRIGGER — click "Run workflow" each morning at 09:10 IST.
+#
+#   09:10 IST trigger + 6-hour GitHub hard cap = 15:10 IST.
+#   The bot waits internally until 09:20 IST before entering trades,
+#   then squares off all positions at 15:10 IST automatically.
+#
+# HOW TO START EACH MORNING:
+#   GitHub → Actions → "ORB v3 — Time-Decay Trading Bot" → "Run workflow"
+#   Enter today's position size and click the green button.
+# -----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      position_size:
+        description: "Capital per trade in INR (e.g. 150000)"
+        required: true
+        default: "150000"
+
+concurrency:
+  group: orb-v3-trading-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  trade:
+    name: ORB v3 — Live Trading (Rs${{ github.event.inputs.position_size }}/trade)
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ORB v3 strategy
+        env:
+          STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
+          STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
+          POSITION_SIZE_INR: ${{ github.event.inputs.position_size }}
+        run: |
+          SIZE="${{ github.event.inputs.position_size }}"
+          MAX_DEPLOY=$(( SIZE * 5 ))
+          echo "============================================"
+          echo "  ORB v3 Bot — $(date +'%Y-%m-%d %H:%M')"
+          echo "  Position size : Rs${SIZE} per trade"
+          echo "  Max positions : 5 (regime-adjusted)"
+          echo "  Max deployment: Rs${MAX_DEPLOY}"
+          echo "  Universe      : 55 stocks, top 25 by ATR%"
+          echo "  Window        : 15-min ORB → 11:00 IST"
+          echo "  Regime        : NIFTY filter active"
+          echo "  Exits         : TARGET | SL (ratchet) | TIME_EXIT (T+60) | ORB_FAILED"
+          echo "============================================"
+          python main.py
+
+      - name: Save performance log to repo
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add performance_log_ORB.csv 2>/dev/null || true
+          git diff --staged --quiet \
+            && echo "No new trades to commit." \
+            || git commit -m "perf: ORB v3 Rs${{ github.event.inputs.position_size }}/trade $(date -u '+%Y-%m-%d')" \
+            && git push origin HEAD:${{ github.ref_name }}
